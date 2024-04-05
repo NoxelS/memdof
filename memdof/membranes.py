@@ -6,7 +6,10 @@ from Bio.PDB.Structure import Structure
 from Bio.PDB.vectors import calc_dihedral
 from mtypes import *
 from scipy.signal import find_peaks, savgol_filter
+from scipy.stats import normaltest
 
+def gaussian(x, mu, sig):
+    return 1./(np.sqrt(2.*np.pi)*sig)*np.exp(-np.power((x - mu)/sig, 2.)/2)
 
 def parse_PTB(
     path: str, id: str = "X", ignore_hydrogen: bool = False, quiet: bool = True
@@ -28,9 +31,12 @@ def parse_PTB(
 if __name__ == "__main__":
     structure, pbc = parse_PTB("tests/assets/1.pdb", "DOPC", quiet=True)
 
-    CUTOFF_STD = 0.01  # Å
+    STATISTIC_THRESHOLDS = [115, 115, 105] # Bonds, angles, dihedrals
+    MAX_RELATIVE_STDS = [0.01, 0.05, 0.05] # Bonds, angles, dihedrals
 
     import matplotlib.pyplot as plt
+    print(plt.style.available)
+    plt.style.use("seaborn-pastel")
     from topologies import parse_topology
 
     bond_info = parse_topology("tests/assets/DOPC.itp", ignore_hydrogen=True)
@@ -44,11 +50,11 @@ if __name__ == "__main__":
             atoms = list(residue.get_atoms())
 
             # Iterate over all bonds
-            for bond_index, bond in enumerate(bond_info.bonds):
+            for coordinate_index, coordinate in enumerate(bond_info.bonds):
                 # Get atom names of the bond
                 i_name, j_name = (
-                    bond_info.atoms[bond["i"]]["atom"],
-                    bond_info.atoms[bond["j"]]["atom"],
+                    bond_info.atoms[coordinate["i"]]["atom"],
+                    bond_info.atoms[coordinate["j"]]["atom"],
                 )
 
                 # Get atom objects
@@ -66,7 +72,7 @@ if __name__ == "__main__":
                     vec = vec - pbc * np.round(vec / pbc)
 
                 # Append the norm of the vector to the list
-                norms[bond_index].append(np.linalg.norm(vec))
+                norms[coordinate_index].append(np.linalg.norm(vec))
 
             # Iterate over all angles
             for angle_index, angle in enumerate(bond_info.angles):
@@ -162,194 +168,139 @@ if __name__ == "__main__":
                 # Append the dihedral to the list
                 dihedrals[dihedral_index].append(dihedral)
 
-    bonds_freedom = []
-    bonds_fixed = []
+    # Internal coodiantes
+    coordinates = [norms, angles, dihedrals]
+    fixed = [[], [], []]    # Fixed norms, angles and dihedrals
+    freedom = [[], [], []]  # Free norms, angles and dihedrals
+    coodinates_with_fixed_flag = [[], [], []]
 
-    angles_freedom = []
-    angles_fixed = []
+    for k, coordinate_list in enumerate([bond_info.bonds, bond_info.angles, bond_info.dihedrals]):
+        print("Starting analysis of ", "bonds" if k == 0 else "angles" if k == 1 else "dihedrals")
 
-    dihedrals_freedom = []
-    dihedrals_fixed = []
+        STATISTIC_THRESHOLD = STATISTIC_THRESHOLDS[k]
+        MAX_RELATIVE_STD = MAX_RELATIVE_STDS[k]
 
-    for bond_index, bond in enumerate(bond_info.bonds):
-        # Calculate the mean and standard deviation of the norms
-        mean, std = np.mean(norms[bond_index]), np.std(norms[bond_index])
+        for coordinate_index, coordinate in enumerate(coordinate_list):
+            # Calculate the mean and standard deviation of the norms
+            mean, std = np.mean(coordinates[k][coordinate_index]), np.std(coordinates[k][coordinate_index])
 
-        # Bin the norms in 100 bins
-        hist, bin_edges = np.histogram(norms[bond_index], bins=100)
+            # Bin the norms in 100 bins
+            hist, bin_edges = np.histogram(coordinates[k][coordinate_index], bins=100)
 
-        # Find value where the histogram is at its peak
-        peak0 = np.argmax(hist)
+            # Find value where the histogram is at its peak
+            peak0 = np.argmax(hist)
 
-        # Remove all norms that are less than 10% of the peaks occurrence
-        hist[hist < 0.05 * hist[peak0]] = 0
+            # Remove all norms that are less than 5% of the peaks occurrence
+            hist[hist < 0.05 * hist[peak0]] = 0
 
-        # Apply a Savitzky-Golay filter to the histogram
-        hist = savgol_filter(hist, 21, 3)
+            # Apply a Savitzky-Golay filter to the histogram
+            hist = savgol_filter(hist, 21, 3)
 
-        # Remove negative values
-        hist[hist < 0] = 0
+            # Remove negative values
+            hist[hist < 0] = 0
 
-        # Find peaks for histogram
-        peaks, dict = find_peaks(
-            hist,
-            threshold=[0, 99999],
-            distance=20,
-            width=10,
-            height=[np.max(hist) * 0.05, 99999],
-        )
+            # Calculate the normality of the data
+            res = normaltest(coordinates[k][coordinate_index])
+            normality = res.statistic
 
-        # Plot the histogram and the peaks bonds of the original data
-        plt.hist(norms[bond_index], bins=100, alpha=0.5, color="b")
+            # Decide if the data is normal (normal = fixed)
+            is_fixed = normality < STATISTIC_THRESHOLD and std / mean < MAX_RELATIVE_STD
 
-        # Plot the smoothed histogram (same x-axis as the original data)
-        plt.plot(bin_edges[1:], hist, color="purple")
+            # Find peaks for histogram
+            peaks, dict = find_peaks(
+                hist,
+                threshold=[0, 99999],
+                distance=20,
+                width=10,
+                height=[np.max(hist) * 0.05, 99999],
+            )
 
-        # Plot the mean and standard deviation
-        plt.axvline(mean, color="r", linestyle="-", alpha=0.5)
-        plt.axvline(mean + std, color="r", linestyle="-", alpha=0.5)
-        plt.axvline(mean - std, color="r", linestyle="-", alpha=0.5)
+            # Choose different colors for different coordiantes
+            color = 'black'
+            if k == 0:
+                color = "purple"
+            elif k == 1:
+                color = "green"
+            elif k == 2:
+                color = "orange"
 
-        # Plot the peaks
-        plt.plot(bin_edges[peaks], hist[peaks], "x", color="r")
-        plt.title(f"{bond_index}: {mean:.3f} ± {std:.3f} Å ({len(peaks)} peaks)")
+            plt.grid()
 
-        plt.savefig(f"tmp/plot_{bond_index}.png")
-        plt.clf()
+            # Plot the histogram and the peaks bonds of the original data
+            plt.hist(coordinates[k][coordinate_index], bins=100, alpha=0.75, color=color, label="Bond length occurances")
 
-        # Print the results
-        # print(f"{bond_index}: {mean:.3f} ± {std:.3f} Å ({len(peaks)} peaks)")
+            # Plot the smoothed histogram (same x-axis as the original data)
+            plt.plot(bin_edges[1:], hist, color=color, label="Smoothed histogram", alpha=0.75)
 
-        # TODO: Use more criteria
+            # Plot the theoretical normal distribution (continuous)
+            x = np.linspace(np.min(coordinates[k][coordinate_index]), np.max(coordinates[k][coordinate_index]), 100)
+            y = gaussian(x, mean, std)
 
-        if len(peaks) == 1:
-            bonds_fixed.append(bond_index)
-        else:
-            bonds_freedom.append(bond_index)
+            # Scale the normal distribution to the histogram
+            y = y / np.max(y) * np.max(hist)
 
-    for angle_index, angle in enumerate(bond_info.angles):
-        # Calculate the mean and standard deviation of the angles
-        mean, std = np.mean(angles[angle_index]), np.std(angles[angle_index])
+            # Choose color for different types of internal coordinates
+            color = "b" if is_fixed else "r"
+            opacity = 1 if is_fixed else 0.5
+            dimension = "Å" if k == 0 else "°"
 
-        # Bin the norms in 100 bins
-        hist, bin_edges = np.histogram(angles[angle_index], bins=100)
+            # Plot normal distrubtion
+            plt.plot(x, y, color=color, linestyle="dotted", label="Normal distribution", alpha=opacity, linewidth=1.5)
 
-        # Find value where the histogram is at its peak
-        peak0 = np.argmax(hist)
+            # Plot the mean and standard deviation
+            plt.axvline(mean, color="black", linestyle="--", alpha=0.5, linewidth=0.75, label=f"Mean $\mu={mean:.3f}{dimension}$")
+            plt.axvline(mean + std, color="black", linestyle="--", alpha=0.5, linewidth=0.75, label=f"Std $\sigma={std:.3f}{dimension}, {std/mean*100:.3f}%$")
+            plt.axvline(mean - std, color="black", linestyle="--", alpha=0.5, linewidth=0.75)
 
-        # Remove all norms that are less than 10% of the peaks occurrence
-        hist[hist < 0.05 * hist[peak0]] = 0
+            # Print mu and sigma on the plot
+            plt.text(mean, np.max(hist), f"$\mu$", ha="center", va="bottom", color="black")
+            plt.text(mean + std, np.max(hist), f"$\mu+\sigma$", ha="center", va="bottom", color="black")
+            plt.text(mean - std, np.max(hist), f"$\mu-\sigma$", ha="center", va="bottom", color="black")
 
-        # Apply a Savitzky-Golay filter to the histogram
-        hist = savgol_filter(hist, 21, 3)
+            # Plot the peaks
+            if k == 0:
+                coordinate_name = f"{bond_info.atoms[coordinate['i']]['atom']}-{bond_info.atoms[coordinate['j']]['atom']}"
+                plt.title(f"Bond length {coordinate_name}: ({mean:.3f} ± {std:.3f})Å\n{len(peaks)} peaks, {normality:.3f}, fixed: {is_fixed}")
+            elif k == 1:
+                coordinate_name = f"{bond_info.atoms[coordinate['i']]['atom']}-{bond_info.atoms[coordinate['j']]['atom']}-{bond_info.atoms[coordinate['k']]['atom']}"
+                plt.title(f"Angle {coordinate_name}: ({mean:.3f} ± {std:.3f})°\n{len(peaks)} peaks, {normality:.3f}, fixed: {is_fixed}")
+            elif k == 2:
+                coordinate_name = f"{bond_info.atoms[coordinate['i']]['atom']}-{bond_info.atoms[coordinate['j']]['atom']}-{bond_info.atoms[coordinate['k']]['atom']}-{bond_info.atoms[coordinate['l']]['atom']}"
+                plt.title(f"Dihedral {coordinate_name}: ({mean:.3f} ± {std:.3f})°\n{len(peaks)} peaks, {normality:.3f}, fixed: {is_fixed}")
 
-        # Remove negative values
-        hist[hist < 0] = 0
+            # Axes label
+            xLabel = "Bond length" if k == 0 else "Angle" if k == 1 else "Dihedral"
+            plt.xlabel(f"{xLabel} [{dimension}]")
+            plt.ylabel("Occurances")
 
-        # Find peaks for histogram
-        peaks, dict = find_peaks(
-            hist,
-            threshold=[0, 99999],
-            distance=20,
-            width=10,
-            height=[np.max(hist) * 0.05, 99999],
-        )
+            # Plot legend
+            plt.legend(fontsize='small')
 
-        # Plot the histogram and the peaks bonds of the original data
-        plt.hist(angles[angle_index], bins=100, alpha=0.5, color="b")
+            name = "bond" if k == 0 else "angle" if k == 1 else "dihedral"
+            plt.savefig(f"tmp/plot_{name}_{coordinate_index}.png")
+            plt.clf()
 
-        # Plot the smoothed histogram (same x-axis as the original data)
-        plt.plot(bin_edges[1:], hist, color="purple")
+            if is_fixed:
+                fixed[k].append(coordinate_index)
+            else:
+                freedom[k].append(coordinate_index)
 
-        # Plot the mean and standard deviation
-        plt.axvline(mean, color="r", linestyle="-", alpha=0.5)
-        plt.axvline(mean + std, color="r", linestyle="-", alpha=0.5)
-        plt.axvline(mean - std, color="r", linestyle="-", alpha=0.5)
+            coodinates_with_fixed_flag[k].append({"fixed": is_fixed, mean: mean, std: std, **coordinate})
 
-        # Plot the peaks
-        plt.plot(bin_edges[peaks], hist[peaks], "x", color="r")
-        plt.title(f"{angle_index}: {mean:.3f} ± {std:.3f} Å ({len(peaks)} peaks)")
-
-        plt.savefig(f"tmp/plot_angle_{angle_index}.png")
-        plt.clf()
-
-        # Print the results
-        # print(f"{bond_index}: {mean:.3f} ± {std:.3f} Å ({len(peaks)} peaks)")
-
-        # TODO: Use more criteria
-
-        if len(peaks) == 1:
-            angles_fixed.append(bond_index)
-        else:
-            angles_freedom.append(bond_index)
-
-    for dihedral_index, dihedral in enumerate(bond_info.dihedrals):
-        # Calculate the mean and standard deviation of the dihedrals
-        mean, std = np.mean(dihedrals[dihedral_index]), np.std(
-            dihedrals[dihedral_index]
-        )
-
-        # Bin the norms in 100 bins
-        hist, bin_edges = np.histogram(dihedrals[dihedral_index], bins=100)
-
-        # Find value where the histogram is at its peak
-        peak0 = np.argmax(hist)
-
-        # Remove all norms that are less than 10% of the peaks occurrence
-        hist[hist < 0.05 * hist[peak0]] = 0
-
-        # Apply a Savitzky-Golay filter to the histogram
-        hist = savgol_filter(hist, 21, 3)
-
-        # Remove negative values
-        hist[hist < 0] = 0
-
-        # Find peaks for histogram
-        peaks, dict = find_peaks(
-            hist,
-            threshold=[0, 99999],
-            distance=20,
-            width=10,
-            height=[np.max(hist) * 0.05, 99999],
-        )
-
-        # Plot the histogram and the peaks bonds of the original data
-        plt.hist(dihedrals[dihedral_index], bins=100, alpha=0.5, color="b")
-
-        # Plot the smoothed histogram (same x-axis as the original data)
-        plt.plot(bin_edges[1:], hist, color="purple")
-
-        # Plot the mean and standard deviation
-        plt.axvline(mean, color="r", linestyle="-", alpha=0.5)
-        plt.axvline(mean + std, color="r", linestyle="-", alpha=0.5)
-        plt.axvline(mean - std, color="r", linestyle="-", alpha=0.5)
-
-        # Plot the peaks
-        plt.plot(bin_edges[peaks], hist[peaks], "x", color="r")
-        plt.title(f"{dihedral_index}: {mean:.3f} ± {std:.3f} Å ({len(peaks)} peaks)")
-
-        plt.savefig(f"tmp/plot_dihedral_{dihedral_index}.png")
-        plt.clf()
-
-        # Print the results
-        # print(f"{bond_index}: {mean:.3f} ± {std:.3f} Å ({len(peaks)} peaks)")
-
-        # TODO: Use more criteria
-
-        if len(peaks) == 1:
-            dihedrals_fixed.append(bond_index)
-        else:
-            dihedrals_freedom.append(bond_index)
-
-    print(f"Fixed bonds: {len(bonds_fixed)}")
-    print(f"Free bonds: {len(bonds_freedom)}")
-    print(f"Fixed angles: {len(angles_fixed)}")
-    print(f"Free angles: {len(angles_freedom)}")
-    print(f"Fixed dihedrals: {len(dihedrals_fixed)}")
-    print(f"Free dihedrals: {len(dihedrals_freedom)}")
+    # Print the results
+    print("Bonds:")
+    print(f"\tFixed: {len(fixed[0])}")
+    print(f"\tFreedom: {len(freedom[0])}")
+    print("Angles:")
+    print(f"\tFixed: {len(fixed[1])}")
+    print(f"\tFreedom: {len(freedom[1])}")
+    print("Dihedrals:")
+    print(f"\tFixed: {len(fixed[2])}")
+    print(f"\tFreedom: {len(freedom[2])}")
     
-    total_dof = len(bonds_freedom) + len(angles_freedom) + len(dihedrals_freedom)
-    total_fixed_dof = len(bonds_fixed) + len(angles_fixed) + len(dihedrals_fixed)
+    print(coodinates_with_fixed_flag[0])
+    
+    total_dof = len(freedom[0]) + len(freedom[1]) + len(freedom[2])
+    total_fixed_dof = len(fixed[0]) + len(fixed[1]) + len(fixed[2])
     print(f"Total degrees of freedom: {total_dof}")
     print(f"{total_dof + total_fixed_dof} -> {total_dof}")
-    
