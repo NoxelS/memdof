@@ -35,7 +35,7 @@ if __name__ == "__main__":
     MAX_RELATIVE_STDS = [0.01, 0.05, 0.05] # Bonds, angles, dihedrals
 
     import matplotlib.pyplot as plt
-    print(plt.style.available)
+    # print(plt.style.available)
     plt.style.use("seaborn-pastel")
     from topologies import parse_topology
 
@@ -285,22 +285,43 @@ if __name__ == "__main__":
             else:
                 freedom[k].append(coordinate_index)
 
-            coodinates_with_fixed_flag[k].append({"fixed": is_fixed, mean: mean, std: std, **coordinate})
+            coodinates_with_fixed_flag[k].append({"fixed": is_fixed, "mean": mean, "std": std, **coordinate})
 
     # Print the results
     print("Bonds:")
     print(f"\tFixed: {len(fixed[0])}")
-    print(f"\tFreedom: {len(freedom[0])}")
+    print(f"\tFree: {len(freedom[0])}")
     print("Angles:")
     print(f"\tFixed: {len(fixed[1])}")
-    print(f"\tFreedom: {len(freedom[1])}")
+    print(f"\tFree: {len(freedom[1])}")
     print("Dihedrals:")
     print(f"\tFixed: {len(fixed[2])}")
-    print(f"\tFreedom: {len(freedom[2])}")
-    
-    print(coodinates_with_fixed_flag[0])
-    
+    print(f"\tFree: {len(freedom[2])}")
+
+    # print(coodinates_with_fixed_flag[0])
+
     total_dof = len(freedom[0]) + len(freedom[1]) + len(freedom[2])
     total_fixed_dof = len(fixed[0]) + len(fixed[1]) + len(fixed[2])
     print(f"Total degrees of freedom: {total_dof}")
     print(f"{total_dof + total_fixed_dof} -> {total_dof}")
+
+    # Make csv for fixed and free coordinates for each type of internal coordinate
+    import csv
+
+    with open("tmp/bonds.csv", "w") as f:
+        writer = csv.writer(f)
+        writer.writerow(["i", "j", "fixed", "mean", "std"])
+        for i, bond in enumerate(coodinates_with_fixed_flag[0]):
+            writer.writerow([bond["i"], bond["j"], bond["fixed"], f"{bond['mean']:.3f}Å", f"{bond['std']:.3f}Å"])
+
+    with open("tmp/angles.csv", "w") as f:
+        writer = csv.writer(f)
+        writer.writerow(["i", "j", "k", "fixed", "mean", "std"])
+        for i, angle in enumerate(coodinates_with_fixed_flag[1]):
+            writer.writerow([angle["i"], angle["j"], angle["k"], angle["fixed"], f"{angle['mean']:.3f}°", f"{angle['std']:.3f}°"])
+
+    with open("tmp/dihedrals.csv", "w") as f:
+        writer = csv.writer(f)
+        writer.writerow(["i", "j", "k", "l", "fixed", "mean", "std"])
+        for i, dihedral in enumerate(coodinates_with_fixed_flag[2]):
+            writer.writerow([dihedral["i"], dihedral["j"], dihedral["k"], dihedral["l"], dihedral["fixed"], f"{dihedral['mean']:.3f}°", f"{dihedral['std']:.3f}°"])
