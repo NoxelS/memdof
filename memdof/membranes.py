@@ -175,7 +175,7 @@ if __name__ == "__main__":
     coodinates_with_fixed_flag = [[], [], []]
 
     for k, coordinate_list in enumerate([bond_info.bonds, bond_info.angles, bond_info.dihedrals]):
-        print("Starting analysis of ", "bonds" if k == 0 else "angles" if k == 1 else "dihedrals")
+        print("Starting analysis of", "bonds" if k == 0 else "angles" if k == 1 else "dihedrals")
 
         STATISTIC_THRESHOLD = STATISTIC_THRESHOLDS[k]
         MAX_RELATIVE_STD = MAX_RELATIVE_STDS[k]
@@ -224,6 +224,7 @@ if __name__ == "__main__":
             elif k == 2:
                 color = "orange"
 
+            # Add grid
             plt.grid()
 
             # Plot the histogram and the peaks bonds of the original data
@@ -260,13 +261,13 @@ if __name__ == "__main__":
             # Plot the peaks
             if k == 0:
                 coordinate_name = f"{bond_info.atoms[coordinate['i']]['atom']}-{bond_info.atoms[coordinate['j']]['atom']}"
-                plt.title(f"Bond length {coordinate_name}: ({mean:.3f} ± {std:.3f})Å\n{len(peaks)} peaks, {normality:.3f}, fixed: {is_fixed}")
+                plt.title(f"Bond length {coordinate_name}\nNormality: {normality:.3f}, Fixed: {is_fixed}")
             elif k == 1:
                 coordinate_name = f"{bond_info.atoms[coordinate['i']]['atom']}-{bond_info.atoms[coordinate['j']]['atom']}-{bond_info.atoms[coordinate['k']]['atom']}"
-                plt.title(f"Angle {coordinate_name}: ({mean:.3f} ± {std:.3f})°\n{len(peaks)} peaks, {normality:.3f}, fixed: {is_fixed}")
+                plt.title(f"Angle {coordinate_name}\nNormality: {normality:.3f}, Fixed: {is_fixed}")
             elif k == 2:
                 coordinate_name = f"{bond_info.atoms[coordinate['i']]['atom']}-{bond_info.atoms[coordinate['j']]['atom']}-{bond_info.atoms[coordinate['k']]['atom']}-{bond_info.atoms[coordinate['l']]['atom']}"
-                plt.title(f"Dihedral {coordinate_name}: ({mean:.3f} ± {std:.3f})°\n{len(peaks)} peaks, {normality:.3f}, fixed: {is_fixed}")
+                plt.title(f"Dihedral {coordinate_name}\nNormality: {normality:.3f}, Fixed: {is_fixed}")
 
             # Axes label
             xLabel = "Bond length" if k == 0 else "Angle" if k == 1 else "Dihedral"
@@ -298,8 +299,6 @@ if __name__ == "__main__":
     print(f"\tFixed: {len(fixed[2])}")
     print(f"\tFree: {len(freedom[2])}")
 
-    # print(coodinates_with_fixed_flag[0])
-
     total_dof = len(freedom[0]) + len(freedom[1]) + len(freedom[2])
     total_fixed_dof = len(fixed[0]) + len(fixed[1]) + len(fixed[2])
     print(f"Total degrees of freedom: {total_dof}")
@@ -325,3 +324,18 @@ if __name__ == "__main__":
         writer.writerow(["i", "j", "k", "l", "fixed", "mean", "std"])
         for i, dihedral in enumerate(coodinates_with_fixed_flag[2]):
             writer.writerow([dihedral["i"], dihedral["j"], dihedral["k"], dihedral["l"], dihedral["fixed"], f"{dihedral['mean']:.3f}°", f"{dihedral['std']:.3f}°"])
+
+
+    """
+        This is a list of dictionaries with the following keys
+        - fixed: bool
+        - mean: float
+        - std: float
+        - **coordinate: dict (depends on the type of internal coordinate k)
+    """
+    #coodinates_with_fixed_flag
+
+    # Save the results as pickle
+    import pickle
+    with open("tmp/coordinates.pkl", "wb") as f:
+        pickle.dump(coodinates_with_fixed_flag, f)
