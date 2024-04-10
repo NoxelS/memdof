@@ -1,15 +1,24 @@
+import csv
+import os
+import pickle
+
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 from Bio.PDB import PDBParser
 from Bio.PDB.Atom import Atom
 from Bio.PDB.Chain import Chain
 from Bio.PDB.Structure import Structure
 from Bio.PDB.vectors import calc_dihedral
-from mtypes import *
 from scipy.signal import find_peaks, savgol_filter
 from scipy.stats import normaltest
 
-def gaussian(x, mu, sig):
-    return 1./(np.sqrt(2.*np.pi)*sig)*np.exp(-np.power((x - mu)/sig, 2.)/2)
+from memdof.topologies import (ExtendedTopologyInfo, TopologyInfo,
+                               parse_topology)
+
+# plt.style.use("seaborn-paper")
+# matplotlib.rcParams.update({"font.size": 16})
+
 
 def parse_PTB(
     path: str, id: str = "X", ignore_hydrogen: bool = False, quiet: bool = True
@@ -28,33 +37,55 @@ def parse_PTB(
     return structure, pbc
 
 
-if __name__ == "__main__":
-    structure, pbc = parse_PTB("tests/assets/1.pdb", "DOPC", quiet=True)
+def calc_IDOF(
+    structure: Structure,
+    pbc: tuple[float, float, float],
+    topology_info: TopologyInfo,
+    quiet: bool = True,
+    max_normality: tuple[float, float, float] = (115, 105, 105),
+    max_std: tuple[float, float, float] = (0.1, 1.0, 1.0),
+    create_plots: bool = False,
+    plots_path: str = "tmp",
+    create_csv: bool = False,
+    csv_path: str = "tmp",
+) -> ExtendedTopologyInfo:
+    """
+    Calculate the internal degrees of freedom for a given structure.
 
-    STATISTIC_THRESHOLDS = [115, 115, 105] # Bonds, angles, dihedrals
-    MAX_RELATIVE_STDS = [0.01, 0.05, 0.05] # Bonds, angles, dihedrals
+    Args:
+        structure (Structure): The structure object
+        pbc (tuple[float, float, float]): The periodic boundary conditions
+        topology_info (TopologyInfo): The bond information
+        quiet (bool, optional): Suppress warnings. Defaults to True.
+        max_normality (tuple[float, float, float], optional): The maximum normality for bonds according to D'Agostino and Pearson's normality test. The tuple contains the maximum normality for bonds, angles and dihedrals. Defaults to (115, 115, 105).
+        max_std (tuple[float, float, float], optional): The maximum standard deviation for bonds, angles and dihedrals. Defaults to (0.1 A, 0.5°, 0.5°).
+        create_plots (bool, optional): If true creates plots. Defaults to False.
+        plots_path (str, optional): The path to save the plots. Defaults to "tmp".
+        create_csv (bool, optional): If true creates csv files. Defaults to False.
+        csv_path (str, optional): The path to save the csv files. Defaults to "tmp".
+    """
 
-    import matplotlib.pyplot as plt
-    # print(plt.style.available)
-    plt.style.use("seaborn-pastel")
-    from topologies import parse_topology
+    def gaussian(x, mu, sig):
+        return (
+            1.0
+            / (np.sqrt(2.0 * np.pi) * sig)
+            * np.exp(-np.power((x - mu) / sig, 2.0) / 2)
+        )
 
-    bond_info = parse_topology("tests/assets/DOPC.itp", ignore_hydrogen=True)
-
-    norms = [[] for _ in bond_info.bonds]
-    angles = [[] for _ in bond_info.angles]
-    dihedrals = [[] for _ in bond_info.dihedrals]
+    norms = [[] for _ in topology_info.bonds]
+    angles = [[] for _ in topology_info.angles]
+    dihedrals = [[] for _ in topology_info.dihedrals]
 
     for chain in structure.get_chains():
         for residue in chain.get_residues():
             atoms = list(residue.get_atoms())
 
             # Iterate over all bonds
-            for coordinate_index, coordinate in enumerate(bond_info.bonds):
+            for coordinate_index, coordinate in enumerate(topology_info.bonds):
                 # Get atom names of the bond
                 i_name, j_name = (
-                    bond_info.atoms[coordinate["i"]]["atom"],
-                    bond_info.atoms[coordinate["j"]]["atom"],
+                    topology_info.atoms[coordinate["i"]]["atom"],
+                    topology_info.atoms[coordinate["j"]]["atom"],
                 )
 
                 # Get atom objects
@@ -75,12 +106,12 @@ if __name__ == "__main__":
                 norms[coordinate_index].append(np.linalg.norm(vec))
 
             # Iterate over all angles
-            for angle_index, angle in enumerate(bond_info.angles):
+            for angle_index, angle in enumerate(topology_info.angles):
                 # Get atom names of the bond
                 i_name, j_name, k_name = (
-                    bond_info.atoms[angle["i"]]["atom"],
-                    bond_info.atoms[angle["j"]]["atom"],
-                    bond_info.atoms[angle["k"]]["atom"],
+                    topology_info.atoms[angle["i"]]["atom"],
+                    topology_info.atoms[angle["j"]]["atom"],
+                    topology_info.atoms[angle["k"]]["atom"],
                 )
 
                 # Get atom objects
@@ -116,13 +147,13 @@ if __name__ == "__main__":
                 angles[angle_index].append(angle)
 
             # Iterate over all dihedrals
-            for dihedral_index, dihedral in enumerate(bond_info.dihedrals):
+            for dihedral_index, dihedral in enumerate(topology_info.dihedrals):
                 # Get atom names of the bond
                 i_name, j_name, k_name, l_name = (
-                    bond_info.atoms[dihedral["i"]]["atom"],
-                    bond_info.atoms[dihedral["j"]]["atom"],
-                    bond_info.atoms[dihedral["k"]]["atom"],
-                    bond_info.atoms[dihedral["l"]]["atom"],
+                    topology_info.atoms[dihedral["i"]]["atom"],
+                    topology_info.atoms[dihedral["j"]]["atom"],
+                    topology_info.atoms[dihedral["k"]]["atom"],
+                    topology_info.atoms[dihedral["l"]]["atom"],
                 )
 
                 # Get atom objects
@@ -170,19 +201,28 @@ if __name__ == "__main__":
 
     # Internal coodiantes
     coordinates = [norms, angles, dihedrals]
-    fixed = [[], [], []]    # Fixed norms, angles and dihedrals
+    fixed = [[], [], []]  # Fixed norms, angles and dihedrals
     freedom = [[], [], []]  # Free norms, angles and dihedrals
     coodinates_with_fixed_flag = [[], [], []]
 
-    for k, coordinate_list in enumerate([bond_info.bonds, bond_info.angles, bond_info.dihedrals]):
-        print("Starting analysis of", "bonds" if k == 0 else "angles" if k == 1 else "dihedrals")
+    # Create dir if required
+    if create_plots and not os.path.exists(plots_path):
+        os.makedirs(plots_path)
 
-        STATISTIC_THRESHOLD = STATISTIC_THRESHOLDS[k]
-        MAX_RELATIVE_STD = MAX_RELATIVE_STDS[k]
+    for k, coordinate_list in enumerate(
+        [topology_info.bonds, topology_info.angles, topology_info.dihedrals]
+    ):
+        if not quiet:
+            print(
+                "Starting analysis of",
+                "bonds" if k == 0 else "angles" if k == 1 else "dihedrals",
+            )
 
         for coordinate_index, coordinate in enumerate(coordinate_list):
             # Calculate the mean and standard deviation of the norms
-            mean, std = np.mean(coordinates[k][coordinate_index]), np.std(coordinates[k][coordinate_index])
+            mean, std = np.mean(coordinates[k][coordinate_index]), np.std(
+                coordinates[k][coordinate_index]
+            )
 
             # Bin the norms in 100 bins
             hist, bin_edges = np.histogram(coordinates[k][coordinate_index], bins=100)
@@ -204,138 +244,341 @@ if __name__ == "__main__":
             normality = res.statistic
 
             # Decide if the data is normal (normal = fixed)
-            is_fixed = normality < STATISTIC_THRESHOLD and std / mean < MAX_RELATIVE_STD
+            is_fixed = normality < max_normality[k] and std < max_std[k]
 
-            # Find peaks for histogram
-            peaks, dict = find_peaks(
-                hist,
-                threshold=[0, 99999],
-                distance=20,
-                width=10,
-                height=[np.max(hist) * 0.05, 99999],
-            )
+            if create_plots:
+                # Choose different colors for different coordiantes
+                color = "black"
+                if k == 0:
+                    color = "purple"
+                elif k == 1:
+                    color = "green"
+                elif k == 2:
+                    color = "orange"
 
-            # Choose different colors for different coordiantes
-            color = 'black'
-            if k == 0:
-                color = "purple"
-            elif k == 1:
-                color = "green"
-            elif k == 2:
-                color = "orange"
+                # Add grid
+                plt.grid()
 
-            # Add grid
-            plt.grid()
+                # Plot the histogram and the peaks bonds of the original data
+                plt.hist(
+                    coordinates[k][coordinate_index],
+                    bins=100,
+                    alpha=0.75,
+                    color=color,
+                    label="Bond length occurances",
+                )
 
-            # Plot the histogram and the peaks bonds of the original data
-            plt.hist(coordinates[k][coordinate_index], bins=100, alpha=0.75, color=color, label="Bond length occurances")
+                # Plot the smoothed histogram (same x-axis as the original data)
+                plt.plot(
+                    bin_edges[1:],
+                    hist,
+                    color=color,
+                    label="Smoothed histogram",
+                    alpha=0.75,
+                )
 
-            # Plot the smoothed histogram (same x-axis as the original data)
-            plt.plot(bin_edges[1:], hist, color=color, label="Smoothed histogram", alpha=0.75)
+                # Plot the theoretical normal distribution (continuous)
+                x = np.linspace(
+                    np.min(coordinates[k][coordinate_index]),
+                    np.max(coordinates[k][coordinate_index]),
+                    100,
+                )
+                y = gaussian(x, mean, std)
 
-            # Plot the theoretical normal distribution (continuous)
-            x = np.linspace(np.min(coordinates[k][coordinate_index]), np.max(coordinates[k][coordinate_index]), 100)
-            y = gaussian(x, mean, std)
+                # Scale the normal distribution to the histogram
+                y = y / np.max(y) * np.max(hist)
 
-            # Scale the normal distribution to the histogram
-            y = y / np.max(y) * np.max(hist)
+                # Choose color for different types of internal coordinates
+                color = "b" if is_fixed else "r"
+                opacity = 1 if is_fixed else 0.5
+                dimension = "Å" if k == 0 else "°"
 
-            # Choose color for different types of internal coordinates
-            color = "b" if is_fixed else "r"
-            opacity = 1 if is_fixed else 0.5
-            dimension = "Å" if k == 0 else "°"
+                # Plot normal distrubtion
+                plt.plot(
+                    x,
+                    y,
+                    color=color,
+                    linestyle="dotted",
+                    label="Normal distribution",
+                    alpha=opacity,
+                    linewidth=1.5,
+                )
 
-            # Plot normal distrubtion
-            plt.plot(x, y, color=color, linestyle="dotted", label="Normal distribution", alpha=opacity, linewidth=1.5)
+                # Plot the mean and standard deviation
+                plt.axvline(
+                    mean,
+                    color="black",
+                    linestyle="--",
+                    alpha=0.5,
+                    linewidth=0.75,
+                    label=f"Mean $\mu={mean:.3f}{dimension}$",
+                )
+                plt.axvline(
+                    mean + std,
+                    color="black",
+                    linestyle="--",
+                    alpha=0.5,
+                    linewidth=0.75,
+                    label=f"Std $\sigma={std:.3f}{dimension}$",
+                )
+                plt.axvline(
+                    mean - std, color="black", linestyle="--", alpha=0.5, linewidth=0.75
+                )
 
-            # Plot the mean and standard deviation
-            plt.axvline(mean, color="black", linestyle="--", alpha=0.5, linewidth=0.75, label=f"Mean $\mu={mean:.3f}{dimension}$")
-            plt.axvline(mean + std, color="black", linestyle="--", alpha=0.5, linewidth=0.75, label=f"Std $\sigma={std:.3f}{dimension}, {std/mean*100:.3f}%$")
-            plt.axvline(mean - std, color="black", linestyle="--", alpha=0.5, linewidth=0.75)
+                # Print mu and sigma on the plot
+                plt.text(
+                    mean,
+                    np.max(hist),
+                    f"$\mu$",
+                    ha="center",
+                    va="bottom",
+                    color="black",
+                )
+                plt.text(
+                    mean + std,
+                    np.max(hist),
+                    f"$\mu+\sigma$",
+                    ha="center",
+                    va="bottom",
+                    color="black",
+                )
+                plt.text(
+                    mean - std,
+                    np.max(hist),
+                    f"$\mu-\sigma$",
+                    ha="center",
+                    va="bottom",
+                    color="black",
+                )
 
-            # Print mu and sigma on the plot
-            plt.text(mean, np.max(hist), f"$\mu$", ha="center", va="bottom", color="black")
-            plt.text(mean + std, np.max(hist), f"$\mu+\sigma$", ha="center", va="bottom", color="black")
-            plt.text(mean - std, np.max(hist), f"$\mu-\sigma$", ha="center", va="bottom", color="black")
+                # Plot the peaks
+                if k == 0:
+                    coordinate_name = f"{topology_info.atoms[coordinate['i']]['atom']}-{topology_info.atoms[coordinate['j']]['atom']}"
+                    plt.title(
+                        f"Bond length {coordinate_name}\nNormality: {normality:.3f}"
+                    )
+                elif k == 1:
+                    coordinate_name = f"{topology_info.atoms[coordinate['i']]['atom']}-{topology_info.atoms[coordinate['j']]['atom']}-{topology_info.atoms[coordinate['k']]['atom']}"
+                    plt.title(f"Angle {coordinate_name}\nNormality: {normality:.3f}")
+                elif k == 2:
+                    coordinate_name = f"{topology_info.atoms[coordinate['i']]['atom']}-{topology_info.atoms[coordinate['j']]['atom']}-{topology_info.atoms[coordinate['k']]['atom']}-{topology_info.atoms[coordinate['l']]['atom']}"
+                    plt.title(f"Dihedral {coordinate_name}\nNormality: {normality:.3f}")
 
-            # Plot the peaks
-            if k == 0:
-                coordinate_name = f"{bond_info.atoms[coordinate['i']]['atom']}-{bond_info.atoms[coordinate['j']]['atom']}"
-                plt.title(f"Bond length {coordinate_name}\nNormality: {normality:.3f}, Fixed: {is_fixed}")
-            elif k == 1:
-                coordinate_name = f"{bond_info.atoms[coordinate['i']]['atom']}-{bond_info.atoms[coordinate['j']]['atom']}-{bond_info.atoms[coordinate['k']]['atom']}"
-                plt.title(f"Angle {coordinate_name}\nNormality: {normality:.3f}, Fixed: {is_fixed}")
-            elif k == 2:
-                coordinate_name = f"{bond_info.atoms[coordinate['i']]['atom']}-{bond_info.atoms[coordinate['j']]['atom']}-{bond_info.atoms[coordinate['k']]['atom']}-{bond_info.atoms[coordinate['l']]['atom']}"
-                plt.title(f"Dihedral {coordinate_name}\nNormality: {normality:.3f}, Fixed: {is_fixed}")
+                # Axes label
+                xLabel = "Bond length" if k == 0 else "Angle" if k == 1 else "Dihedral"
+                plt.xlabel(f"{xLabel} [{dimension}]")
+                plt.ylabel("Occurances")
 
-            # Axes label
-            xLabel = "Bond length" if k == 0 else "Angle" if k == 1 else "Dihedral"
-            plt.xlabel(f"{xLabel} [{dimension}]")
-            plt.ylabel("Occurances")
+                # Plot legend
+                plt.legend(fontsize="small")
 
-            # Plot legend
-            plt.legend(fontsize='small')
+                name = "bond" if k == 0 else "angle" if k == 1 else "dihedral"
 
-            name = "bond" if k == 0 else "angle" if k == 1 else "dihedral"
-            plt.savefig(f"tmp/plot_{name}_{coordinate_index}.png")
-            plt.clf()
+                if not os.path.exists(os.path.join(plots_path, "fixed")):
+                    os.makedirs(os.path.join(plots_path, "fixed"))
+
+                if not os.path.exists(os.path.join(plots_path, "free")):
+                    os.makedirs(os.path.join(plots_path, "free"))
+
+                path = (
+                    os.path.join(plots_path, "fixed")
+                    if is_fixed
+                    else os.path.join(plots_path, "free")
+                )
+                plt.savefig(os.path.join(path, f"{name}_{coordinate_index}.png"))
+                plt.clf()
 
             if is_fixed:
                 fixed[k].append(coordinate_index)
             else:
                 freedom[k].append(coordinate_index)
 
-            coodinates_with_fixed_flag[k].append({"fixed": is_fixed, "mean": mean, "std": std, **coordinate})
+            coodinates_with_fixed_flag[k].append(
+                {"fixed": is_fixed, "mean": mean, "std": std, **coordinate}
+            )
 
-    # Print the results
-    print("Bonds:")
-    print(f"\tFixed: {len(fixed[0])}")
-    print(f"\tFree: {len(freedom[0])}")
-    print("Angles:")
-    print(f"\tFixed: {len(fixed[1])}")
-    print(f"\tFree: {len(freedom[1])}")
-    print("Dihedrals:")
-    print(f"\tFixed: {len(fixed[2])}")
-    print(f"\tFree: {len(freedom[2])}")
+    if not quiet:
+        total_dof = len(freedom[0]) + len(freedom[1]) + len(freedom[2])
+        total_fixed_dof = len(fixed[0]) + len(fixed[1]) + len(fixed[2])
 
-    total_dof = len(freedom[0]) + len(freedom[1]) + len(freedom[2])
-    total_fixed_dof = len(fixed[0]) + len(fixed[1]) + len(fixed[2])
-    print(f"Total degrees of freedom: {total_dof}")
-    print(f"{total_dof + total_fixed_dof} -> {total_dof}")
+        # Print the results
+        print("Bonds:")
+        print(
+            f" - Fixed: {len(fixed[0])} ({len(fixed[0])/len(topology_info.bonds)*100:.2f}%)"
+        )
+        print(
+            f" - Free:  {len(freedom[0])} ({len(freedom[0])/len(topology_info.bonds)*100:.2f}%)"
+        )
+        print("Angles:")
+        print(
+            f" - Fixed: {len(fixed[1])} ({len(fixed[1])/len(topology_info.angles)*100:.2f}%)"
+        )
+        print(
+            f" - Free:  {len(freedom[1])} ({len(freedom[1])/len(topology_info.angles)*100:.2f}%)"
+        )
+        print("Dihedrals:")
+        print(
+            f" - Fixed: {len(fixed[2])} ({len(fixed[2])/len(topology_info.dihedrals)*100:.2f}%)"
+        )
+        print(
+            f" - Free:  {len(freedom[2])} ({len(freedom[2])/len(topology_info.dihedrals)*100:.2f}%)"
+        )
+        print(f"Total free degrees of freedom:  {total_dof}")
+        print(f"Total fixed degrees of freedom: {total_fixed_dof}")
+        print(
+            f"{total_dof + total_fixed_dof} -> {total_dof} (decreased by {(1-total_dof/(total_dof + total_fixed_dof))*100:.2f}%)"
+        )
 
-    # Make csv for fixed and free coordinates for each type of internal coordinate
-    import csv
+    if create_csv:
+        # Create dir if required
+        if not os.path.exists(csv_path):
+            os.makedirs(csv_path)
 
-    with open("tmp/bonds.csv", "w") as f:
-        writer = csv.writer(f)
-        writer.writerow(["i", "j", "fixed", "mean", "std"])
-        for i, bond in enumerate(coodinates_with_fixed_flag[0]):
-            writer.writerow([bond["i"], bond["j"], bond["fixed"], f"{bond['mean']:.3f}Å", f"{bond['std']:.3f}Å"])
+        # Generate paths
+        bond_path = os.path.join(csv_path, "bonds.csv")
+        angle_path = os.path.join(csv_path, "angles.csv")
+        dihedral_path = os.path.join(csv_path, "dihedrals.csv")
 
-    with open("tmp/angles.csv", "w") as f:
-        writer = csv.writer(f)
-        writer.writerow(["i", "j", "k", "fixed", "mean", "std"])
-        for i, angle in enumerate(coodinates_with_fixed_flag[1]):
-            writer.writerow([angle["i"], angle["j"], angle["k"], angle["fixed"], f"{angle['mean']:.3f}°", f"{angle['std']:.3f}°"])
+        # Make csv for fixed and free coordinates for each type of internal coordinate
+        with open(bond_path, "w") as f:
+            writer = csv.writer(f, lineterminator="\n", delimiter=";")
+            writer.writerow(["i", "j", "fixed", "mean", "std"])
+            for i, bond in enumerate(coodinates_with_fixed_flag[0]):
+                writer.writerow(
+                    [
+                        bond["i"],
+                        bond["j"],
+                        bond["fixed"],
+                        f"{bond['mean']:.3f}",
+                        f"{bond['std']:.3f}",
+                    ]
+                )
 
-    with open("tmp/dihedrals.csv", "w") as f:
-        writer = csv.writer(f)
-        writer.writerow(["i", "j", "k", "l", "fixed", "mean", "std"])
-        for i, dihedral in enumerate(coodinates_with_fixed_flag[2]):
-            writer.writerow([dihedral["i"], dihedral["j"], dihedral["k"], dihedral["l"], dihedral["fixed"], f"{dihedral['mean']:.3f}°", f"{dihedral['std']:.3f}°"])
+        with open(angle_path, "w") as f:
+            writer = csv.writer(f, lineterminator="\n", delimiter=";")
+            writer.writerow(["i", "j", "k", "fixed", "mean", "std"])
+            for i, angle in enumerate(coodinates_with_fixed_flag[1]):
+                writer.writerow(
+                    [
+                        angle["i"],
+                        angle["j"],
+                        angle["k"],
+                        angle["fixed"],
+                        f"{angle['mean']:.3f}",
+                        f"{angle['std']:.3f}",
+                    ]
+                )
 
+        with open(dihedral_path, "w") as f:
+            writer = csv.writer(f, lineterminator="\n", delimiter=";")
+            writer.writerow(["i", "j", "k", "l", "fixed", "mean", "std"])
+            for i, dihedral in enumerate(coodinates_with_fixed_flag[2]):
+                writer.writerow(
+                    [
+                        dihedral["i"],
+                        dihedral["j"],
+                        dihedral["k"],
+                        dihedral["l"],
+                        dihedral["fixed"],
+                        f"{dihedral['mean']:.3f}",
+                        f"{dihedral['std']:.3f}",
+                    ]
+                )
 
-    """
-        This is a list of dictionaries with the following keys
-        - fixed: bool
-        - mean: float
-        - std: float
-        - **coordinate: dict (depends on the type of internal coordinate k)
-    """
-    #coodinates_with_fixed_flag
+    # Build the extended topology info
+    extended_topology_info = ExtendedTopologyInfo(
+        moleculetype=topology_info.moleculetype,
+        atoms=topology_info.atoms,
+        pairs=topology_info.pairs,
+        bonds=coodinates_with_fixed_flag[0],
+        angles=coodinates_with_fixed_flag[1],
+        dihedrals=coodinates_with_fixed_flag[2],
+    )
 
-    # Save the results as pickle
-    import pickle
-    with open("tmp/coordinates.pkl", "wb") as f:
-        pickle.dump(coodinates_with_fixed_flag, f)
+    if create_plots:
+        """
+        Create an image with three plots for bonds, angles and dihedrals.
+        Plot all the histograms and the peaks of the original data into the plot.
+        """
+
+        fig, ax = plt.subplots(3, 1, figsize=(13, 10))
+        ax[0].set_title("Bonds")
+        ax[1].set_title("Angles")
+        ax[2].set_title("Dihedrals")
+
+        x_ranges = [(99, 0), (180, 0), (180, 0)]
+
+        for k, coordinate_list in enumerate(
+            [topology_info.bonds, topology_info.angles, topology_info.dihedrals]
+        ):
+            for coordinate_index, coordinate in enumerate(coordinate_list):
+                # Choose color for different types of internal coordinates
+                color = "purple" if coordinate_index in fixed[k] else "red"
+                dimension = "Å" if k == 0 else "°"
+                zorder = 1 if coordinate_index in fixed[k] else 0
+                label = "Fixed" if coordinate_index in fixed[k] else "Free"
+                min_alpha = 0.25 if k == 0 else 0.85
+                max_alpha = 0.5 if k == 0 else 0.25
+                alpha = min_alpha if coordinate_index in fixed[k] else max_alpha
+
+                # Calculate the range of the x-axis
+                max_range = np.max(coordinates[k][coordinate_index])
+                min_range = np.min(coordinates[k][coordinate_index])
+
+                # Update the range if required
+                if min_range < x_ranges[k][0]:
+                    x_ranges[k] = (min_range, x_ranges[k][1])
+                if max_range > x_ranges[k][1]:
+                    x_ranges[k] = (x_ranges[k][0], max_range)
+
+                # Plot the histogram and the peaks bonds of the original data
+                ax[k].hist(
+                    coordinates[k][coordinate_index],
+                    bins=150,
+                    alpha=alpha,
+                    color=color,
+                    zorder=zorder,
+                )
+
+                # Add empty plot to add legend
+                ax[k].plot([], [], color="purple", alpha=1, label="Fixed")
+                ax[k].plot([], [], color="red", alpha=1, label="Free")
+
+                # Axes label
+                xLabel = "Bond length" if k == 0 else "Angle" if k == 1 else "Dihedral"
+                ax[k].set_xlabel(f"{xLabel} [{dimension}]")
+                ax[k].set_ylabel("Occurances")
+
+        # Explain red = free, purple = fixed on the plot as legend
+        for i in range(3):
+            ax[i].legend(["Fixed", "Free"])
+
+        # Add more ticks on x-axis
+        ax[0].set_xticks(
+            np.linspace(
+                np.floor(x_ranges[0][0] * 10) * 0.1,
+                np.ceil(x_ranges[0][1] * 10) * 0.1,
+                num=10,
+            )
+        )
+        ax[1].set_xticks(
+            np.linspace(
+                np.floor(x_ranges[1][0]),
+                np.ceil(x_ranges[1][1]),
+                num=int((np.ceil(x_ranges[1][1]) - np.floor(x_ranges[1][0])) / 5),
+            )
+        )
+        ax[2].set_xticks(
+            np.linspace(
+                np.floor(x_ranges[2][0]),
+                np.ceil(x_ranges[2][1]),
+                num=int((np.ceil(x_ranges[2][1]) - np.floor(x_ranges[2][0])) / 6),
+            )
+        )
+
+        # Tight layout
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_path, "plot_all.png"))
+        plt.clf()
+
+    return extended_topology_info

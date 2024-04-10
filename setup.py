@@ -3,8 +3,8 @@ from setuptools import find_packages, setup
 print(find_packages(include=["memdof", "memdof.*"]))
 setup(
     name="memdof",
-    version="0.1.1",
-    description="A python package to determine the degrees of freedom for a single lipid membrane.",
+    version="0.1.3",
+    description="A python package to determine the internal degrees of freedom for a single lipid membrane.",
     url="https://github.com/NoxelS/memdof",
     author="Noel Schwabenland",
     author_email="noel@lusi.uni-sb.de",

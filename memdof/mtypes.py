@@ -60,3 +60,42 @@ DihedralInfo = TypedDict(
         "func": int,
     },
 )
+
+ExtendedBondInfo = TypedDict(
+    "ExtendedBondInfo",
+    {
+        "i": int,
+        "j": int,
+        "func": int,
+        "fixed": bool,
+        "mean": float,
+        "std": float,
+    },
+)
+
+ExtendedAngleInfo = TypedDict(
+    "ExtendedAngleInfo",
+    {
+        "i": int,
+        "j": int,
+        "k": int,
+        "func": int,
+        "fixed": bool,
+        "mean": float,
+        "std": float,
+    },
+)
+
+ExtendedDihedralInfo = TypedDict(
+    "ExtendedDihedralInfo",
+    {
+        "i": int,
+        "j": int,
+        "k": int,
+        "l": int,
+        "func": int,
+        "fixed": bool,
+        "mean": float,
+        "std": float,
+    },
+)

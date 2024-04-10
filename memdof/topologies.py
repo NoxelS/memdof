@@ -1,7 +1,9 @@
-from mtypes import *
+import json
+
+from memdof.mtypes import *
 
 
-class BondInfo:
+class TopologyInfo:
 
     def __init__(
         self,
@@ -19,8 +21,66 @@ class BondInfo:
         self.angles: list[AngleInfo] = angles
         self.dihedrals: list[DihedralInfo] = dihedrals
 
+    def json(self):
+        return json.dumps(
+            {
+                "moleculetype": self.moleculetype,
+                "atoms": self.atoms,
+                "bonds": self.bonds,
+                "pairs": self.pairs,
+                "angles": self.angles,
+                "dihedrals": self.dihedrals,
+            },
+            default=str,
+            indent=4,
+        )
 
-def parse_topology(path: str, ignore_hydrogen: bool = False) -> BondInfo:
+
+class ExtendedTopologyInfo:
+
+    def __init__(
+        self,
+        moleculetype: MoleculeInfo,
+        atoms: list[AtomInfo],
+        bonds: list[ExtendedBondInfo],
+        pairs: list[PairInfo],
+        angles: list[ExtendedAngleInfo],
+        dihedrals: list[ExtendedDihedralInfo],
+    ):
+        self.moleculetype: MoleculeInfo = moleculetype
+        self.atoms: list[AtomInfo] = atoms
+        self.bonds: list[ExtendedBondInfo] = bonds
+        self.pairs: list[PairInfo] = pairs
+        self.angles: list[ExtendedAngleInfo] = angles
+        self.dihedrals: list[ExtendedDihedralInfo] = dihedrals
+
+    def json(self):
+        return json.dumps(
+            {
+                "moleculetype": self.moleculetype,
+                "atoms": self.atoms,
+                "bonds": self.bonds,
+                "pairs": self.pairs,
+                "angles": self.angles,
+                "dihedrals": self.dihedrals,
+            },
+            default=str,
+            indent=4,
+        )
+
+
+def parse_topology(path: str, ignore_hydrogen: bool = False) -> TopologyInfo:
+    """
+    Parse a GROMACS topology file and return a TopologyInfo object.
+
+    Args:
+        path (str): The path to the topology file.
+        ignore_hydrogen (bool, optional): Whether to ignore hydrogen atoms in the topology file. Defaults to False.
+
+    Returns:
+        TopologyInfo: Contains the parsed topology information, so the moleculetype, atoms, bonds, pairs, angles, and dihedrals.
+    """
+
     (
         moleculetype_lines,
         atom_lines,
@@ -141,7 +201,7 @@ def parse_topology(path: str, ignore_hydrogen: bool = False) -> BondInfo:
             and "H" not in atoms[int(d["l"])]["atom"]
         ]
 
-    return BondInfo(
+    return TopologyInfo(
         moleculetype,
         atoms,
         bonds,
