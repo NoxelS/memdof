@@ -1,5 +1,7 @@
 # MEMDOF - Membrane Degrees Of Freedoms
 
+![MEMDOF](static/membrane.png)
+
 ## Introduction
 
 MEMDOF (Membrane Degrees Of Freedoms) is a Python package designed for analyzing and visualizing the internal degrees of freedom within molecular structures. This tool aims to aid researchers and scientists in understanding the dynamic behavior and flexibility of membrane proteins by providing detailed insights into the fixed and free states of bonds, angles, and dihedral angles within a structure.
